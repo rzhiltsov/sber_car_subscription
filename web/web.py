@@ -1,13 +1,12 @@
+import joblib
 import pandas as pd
-from cloudpickle import cloudpickle
 from fastapi import FastAPI, Response
 
-from response import Metadata, Form, Prediction
+from web.response import Metadata, Form, Prediction
 
 app = FastAPI()
 
-with open('data/pipeline.pkl', 'rb') as file:
-    pipe: dict = cloudpickle.load(file)
+pipe: dict = joblib.load('data/pipeline.pkl')
 
 
 @app.get('/health')

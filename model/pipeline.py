@@ -1,9 +1,8 @@
 from datetime import datetime
 
-import cloudpickle
+import joblib
 import pandas as pd
 from sklearn.compose import ColumnTransformer, make_column_selector
-from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import cross_val_score
@@ -18,36 +17,34 @@ def pipeline():
         pd.read_csv('data/ga_sessions.csv', dtype={'client_id': str}),
         pd.read_csv('data/ga_hits.csv'),
         on='session_id'
-    )
-    df_prepared = df.filter(regex='^(utm|device|geo)_.+').copy()
-    df_prepared['target_action'] = create_target_action(df)
+    ).set_index('client_id')
+    df = filter_columns(df)
+    df = drop_fraud(df)
+    df = fill_blanks(df)
+    df = drop_duplicates(df)
 
-    df_prepared.drop_duplicates(inplace=True)
-
-    x = df_prepared.drop(columns='target_action')
-    y = df_prepared.target_action
-
-    categorical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('encoder', OneHotEncoder(handle_unknown='ignore'))
-    ])
+    x = df.drop(columns='target_action')
+    y = df.target_action
 
     transformer = ColumnTransformer(transformers=[
-        ('categorical', categorical_transformer, make_column_selector())
+        ('encoder', OneHotEncoder(handle_unknown='ignore'), make_column_selector())
+    ])
+
+    preprocessor = Pipeline(steps=[
+        ('transformer', transformer)
     ])
 
     pipe = Pipeline(steps=[
-        ('transformer', transformer),
+        ('preprocessor', preprocessor),
         ('classifier', LogisticRegression(random_state=42, solver='liblinear'))
     ])
 
-    pipe.fit(x, y)
     accuracy = cross_val_score(pipe, x, y, cv=10).mean()
+    pipe.fit(x, y)
     roc_auc = roc_auc_score(y, pipe.predict_proba(x)[:, 1])
     print(accuracy, roc_auc)
 
-    with open('data/pipeline.pkl', 'wb') as file:
-        cloudpickle.dump({
+    joblib.dump({
             'metadata': Metadata(
                 name='Target action prediction',
                 author='Roman Zhiltsov',
@@ -57,7 +54,15 @@ def pipeline():
                 accuracy=accuracy,
                 roc_auc=roc_auc),
             'pipeline': pipe
-        }, file)
+    }, 'data/pipeline.pkl')
+
+
+def filter_columns(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.concat([
+        df.hit_number,
+        df.filter(regex='^(utm|device|geo)_.+'),
+        create_target_action(df)
+    ], axis=1)
 
 
 def create_target_action(df: pd.DataFrame) -> pd.Series:
@@ -65,7 +70,33 @@ def create_target_action(df: pd.DataFrame) -> pd.Series:
                'sub_custom_question_submit_click', 'sub_call_number_click', 'sub_callback_submit_click',
                'sub_submit_success', 'sub_car_request_submit_click'}
 
-    return df.event_action.apply(lambda x: int(x in actions))
+    return df.event_action.apply(lambda x: int(x in actions)).rename('target_action')
+
+
+def outliers_upper_boundary(s: pd.Series) -> float:
+    q25 = s.quantile(0.25)
+    q75 = s.quantile(0.75)
+    iqr = q75 - q25
+
+    return q75 + 1.5 * iqr
+
+
+def drop_fraud(df: pd.DataFrame) -> pd.DataFrame:
+    boundary = outliers_upper_boundary(df.hit_number)
+
+    return df.drop(index=df.hit_number.loc[lambda x: x > boundary].index).drop(columns='hit_number')
+
+
+def fill_blanks(df: pd.DataFrame) -> pd.DataFrame:
+    for column in df:
+        mode = df[column].mode()[0]
+        df[column] = df[column].fillna(mode)
+
+    return df
+
+
+def drop_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+    return df.drop_duplicates()
 
 
 if __name__ == '__main__':

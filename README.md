@@ -7,5 +7,6 @@
 + Python 3.13
 + Pandas
 + Sklearn
++ Joblib
 + Jupyter Notebook
 + FastAPI
